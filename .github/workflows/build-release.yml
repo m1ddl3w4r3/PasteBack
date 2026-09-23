@@ -24,32 +24,52 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          # Full history so `git rev-list --count HEAD` (CFBundleVersion) is meaningful.
+          fetch-depth: 0
 
       - name: Run tests
         run: swift test
 
+      - name: Resolve app version
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then
+            # Strip the leading v; must stay purely numeric for macOS/Homebrew.
+            VERSION="${RELEASE_TAG#v}"
+            case "$VERSION" in
+              [0-9]*) ;;
+              *) echo "error: tag '$RELEASE_TAG' does not carry a numeric version" >&2; exit 1 ;;
+            esac
+          else
+            # Untagged dispatch build: clearly unreleased, still numeric.
+            VERSION="0.0.0"
+          fi
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Building Pasteback $VERSION"
+
       - name: Build universal Pasteback.app (arm64 + x86_64)
         run: |
           scripts/make-icon.sh
-          SWIFT_BUILD_ARGS="--arch arm64 --arch x86_64" scripts/build-app.sh release
+          APP_VERSION="$APP_VERSION" \
+            SWIFT_BUILD_ARGS="--arch arm64 --arch x86_64" scripts/build-app.sh release
 
-      - name: Verify universal binary
+      - name: Verify stamped version and universal binaries
         run: |
+          STAMPED="$(PlistBuddy -c 'Print :CFBundleShortVersionString' dist/Pasteback.app/Contents/Info.plist)"
+          if [ "$STAMPED" != "$APP_VERSION" ]; then
+            echo "error: app reports version '$STAMPED', expected '$APP_VERSION'" >&2
+            exit 1
+          fi
+          echo "Info.plist version OK: $STAMPED"
           lipo -archs dist/Pasteback.app/Contents/MacOS/Pasteback
           lipo -archs dist/Pasteback.app/Contents/MacOS/pasteback-cli
-          lipo -info dist/Pasteback.app/Contents/Frameworks/Sparkle.framework/Sparkle || \
-            lipo -archs dist/Pasteback.app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle
+          lipo -archs dist/Pasteback.app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle
 
       - name: Package release zip
         run: |
-          VERSION="${RELEASE_TAG#v}"
-          if [ -z "$VERSION" ]; then
-            VERSION="0.0.0-untagged"
-          fi
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           # ditto preserves symlinks, permissions and the adhoc signature.
-          ditto -c -k --keepParent dist/Pasteback.app "Pasteback-${VERSION}.zip"
-          shasum -a 256 "Pasteback-${VERSION}.zip" > SHA256SUMS
+          ditto -c -k --keepParent dist/Pasteback.app "Pasteback-${APP_VERSION}.zip"
+          shasum -a 256 "Pasteback-${APP_VERSION}.zip" > SHA256SUMS
           cat SHA256SUMS
 
       - name: Create GitHub Release
@@ -58,15 +78,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            && gh release upload "$RELEASE_TAG" "Pasteback-${VERSION}.zip" SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY" \
-            || gh release create "$RELEASE_TAG" "Pasteback-${VERSION}.zip" SHA256SUMS \
+            && gh release upload "$RELEASE_TAG" "Pasteback-${APP_VERSION}.zip" SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY" \
+            || gh release create "$RELEASE_TAG" "Pasteback-${APP_VERSION}.zip" SHA256SUMS \
                  --title "$RELEASE_TAG" --generate-notes --repo "$GITHUB_REPOSITORY"
 
       - name: Upload artifacts (no release tag)
         if: env.RELEASE_TAG == ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: Pasteback-${{ env.VERSION }}
+          name: Pasteback-${{ env.APP_VERSION }}
           path: |
-            Pasteback-${{ env.VERSION }}.zip
+            Pasteback-${{ env.APP_VERSION }}.zip
             SHA256SUMS
