@@ -1,0 +1,72 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release (leave empty to build without publishing)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Test, build universal app, publish release
+    runs-on: macos-15
+    env:
+      # Tag being released: the pushed tag, or the workflow_dispatch input.
+      RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build universal Pasteback.app (arm64 + x86_64)
+        run: |
+          scripts/make-icon.sh
+          SWIFT_BUILD_ARGS="--arch arm64 --arch x86_64" scripts/build-app.sh release
+
+      - name: Verify universal binary
+        run: |
+          lipo -archs dist/Pasteback.app/Contents/MacOS/Pasteback
+          lipo -archs dist/Pasteback.app/Contents/MacOS/pasteback-cli
+          lipo -info dist/Pasteback.app/Contents/Frameworks/Sparkle.framework/Sparkle || \
+            lipo -archs dist/Pasteback.app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle
+
+      - name: Package release zip
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          if [ -z "$VERSION" ]; then
+            VERSION="0.0.0-untagged"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          # ditto preserves symlinks, permissions and the adhoc signature.
+          ditto -c -k --keepParent dist/Pasteback.app "Pasteback-${VERSION}.zip"
+          shasum -a 256 "Pasteback-${VERSION}.zip" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            && gh release upload "$RELEASE_TAG" "Pasteback-${VERSION}.zip" SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY" \
+            || gh release create "$RELEASE_TAG" "Pasteback-${VERSION}.zip" SHA256SUMS \
+                 --title "$RELEASE_TAG" --generate-notes --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload artifacts (no release tag)
+        if: env.RELEASE_TAG == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Pasteback-${{ env.VERSION }}
+          path: |
+            Pasteback-${{ env.VERSION }}.zip
+            SHA256SUMS

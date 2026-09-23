@@ -7,8 +7,8 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 CONFIG="${1:-release}"
 CONFIG_CAP="$(printf '%s' "$CONFIG" | cut -c1 | tr '[:lower:]' '[:upper:]')$(printf '%s' "$CONFIG" | cut -c2-)"
-echo "==> swift build -c $CONFIG"
-swift build -c "$CONFIG"
+echo "==> swift build -c $CONFIG ${SWIFT_BUILD_ARGS:-}"
+swift build -c "$CONFIG" ${SWIFT_BUILD_ARGS:-}
 
 BIN="$ROOT/.build/$CONFIG/Pasteback"
 # New SwiftPM layouts keep products under .build/out/Products/<Config>.
